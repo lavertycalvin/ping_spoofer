@@ -1,5 +1,4 @@
 /* Header file for trace.c */
-
 #ifndef TRACE_H
 #define TRACE_H
 
@@ -12,7 +11,6 @@
 #include <netinet/ether.h>
 
 /* ================ Ethernet Header defs ================ */
-#define MIN_ETH_LENGTH 64
 #define ARP  0x0806 
 #define IPV4 0x0800
 
