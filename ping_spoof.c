@@ -397,33 +397,47 @@ void printARPHeader(struct arp_header *arp){
 }
 
 void send_icmp_response(); 	//respond to ping
+
+
+void copy_mac_address(struct ether_addr *src, struct ether_addr *dst){
+	fprintf(stderr, "Copying in 'copy_mac_address'\n");
+	for(int i=0; i<MAC_ADDR_LEN; i++){
+		fprintf(stderr, "Copying %d byte...\n", i);
+		dst[i] = src[i];	
+	}
+}
+
 /*pkt_data points to the beginning of the packet to reply to */
 void send_arp_response(const u_char *pkt_data){ 	//response to arp request
 	printf("\ncallocing...\n");
 	void *arp_packet = calloc(1, MIN_ETH_LENGTH);
 	struct enet_header *ethHeader = (struct enet_header *)arp_packet;
 	struct enet_header *request_eth_header = (struct enet_header *)pkt_data;
-	struct arp_header *request_arp_header = (struct arp_header *)(pkt_data++);
-
-	printf("setting ethernet header....\n");
+	printEthernetHeader(request_eth_header);
+	struct arp_header *request_arp_header = (struct arp_header *)(++request_eth_header);
+	printARPHeader(request_arp_header);
+	
+	printf("\nsetting ethernet header....\n");
 	//setup ethernet header response
 	ethHeader->dest = request_eth_header->source;
-	ethHeader->source = *spoof_mac_address;
+	//copy_mac_address(spoof_mac_address, &ethHeader->source);
 	ethHeader->type = htons(ARP); 
+	printEthernetHeader(ethHeader);	
 	
 	printf("setting arp header....\n");
 	//setup arp header response
-	struct arp_header *arp_response = (struct arp_header *)(ethHeader++);
+	struct arp_header *arp_response = (struct arp_header *)(++ethHeader);
 	arp_response->hardware_addr_len = 6; //only 1 byte
 	arp_response->hardware_type = htons(1); //Ethernet
 	arp_response->opcode = htons(ARP_REPLY);
 	arp_response->protocol_addr_len = 4; //only 1 byte
 	arp_response->protocol_type = htons(IPV4);
+	fprintf(stderr, "\t\t\tSpoofed IP Address: %s\n", inet_ntoa(spoof_ip_address.sin_addr));
 	arp_response->sender_ip = spoof_ip_address.sin_addr; //spoofed ip address
-	arp_response->sender_mac = *spoof_mac_address; //spoofed MAC address
+	//copy_mac_address(spoof_mac_address, &arp_response->sender_mac);
 	arp_response->target_ip = request_arp_header->sender_ip; //whoever sent
 	arp_response->target_mac = request_arp_header->sender_mac; //whoever sent
-	
+	printARPHeader(arp_response);
 
 	//send out arp response
 	printf("arp packet ready to send....\n");

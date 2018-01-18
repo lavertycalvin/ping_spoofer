@@ -13,6 +13,9 @@
 
 /* ================ Ethernet Header defs ================ */
 #define MIN_ETH_LENGTH 64
+#define MAC_ADDR_LEN 6
+
+
 #define ARP  0x0806 
 #define IPV4 0x0800
 
