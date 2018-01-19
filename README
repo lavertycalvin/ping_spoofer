@@ -1,2 +1,5 @@
 Author: Calvin Laverty
 Special Instructions: N/A
+Other: N/A
+
+A simple implementation of a ping spoofer. This uses libpcap to filter for ARP or ICMP traffic headed to the spoofed IP and MAC address and responds appropriately.
