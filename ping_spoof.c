@@ -6,12 +6,21 @@
 #include <arpa/inet.h>
 #include "ping_spoof.h"
 #include "checksum.h"
+#include <sys/socket.h>
+#include <linux/if_packet.h>
+#include <sys/ioctl.h>
+#include <net/if.h>
 
 /* GLOBAL DEFS FOR SPOOFING */
 char 			*device; 		//device used to sniff
 pcap_t 			*handle; 		//session handle
 struct sockaddr_in 	spoof_ip_address; 	//designated spoofing ip
-struct ether_addr *spoof_mac_address;  	//designated spoofing mac
+struct ether_addr 	*spoof_mac_address;  		//designated spoofing mac
+int 			socket_fd; //file descriptor used by socket
+struct sockaddr_ll 	response_socket_address; //response socket!
+struct ifreq		interface; //interface (device?);
+int 			interface_index;
+u_char 			interface_mac[6];
 
 struct bpf_program fp; /*compiled filter expression */
 
@@ -96,8 +105,33 @@ int get_device(){
 		fprintf(stderr, "Couldn't find default device: %s\n", errbuf);
 		ret = 1;
 	}
-	//device = "eth0";
-	//fprintf(stderr, "Using device: %s\n", device);
+	
+	//request raw socket
+	if((socket_fd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0){
+		perror("Failure in requesting socket for arp response:");
+		exit(1);
+	}
+
+	//get interface index to use for sending ethernet frames
+	//strncpy(interface.ifr_name, device, sizeof(device));
+	//if(ioctl(socket_fd, SIOCGIFINDEX, &interface) < 0){
+	//	perror("ioctl() device: ");
+	//	exit(1);
+	//}
+	interface_index = interface.ifr_ifindex;	
+
+	//get mac address of interface
+	if(ioctl(socket_fd, SIOCGIFHWADDR, &interface) < 0){
+		perror("ioctl() mac: ");
+		exit(1);
+	}
+	//copy over mac address of interface to global var (and to socket)
+	for(int i = 0; i < 6; i++){
+		response_socket_address.sll_addr[i] = interface.ifr_hwaddr.sa_data[i]; //need to get interface first	
+		interface_mac[i] = interface.ifr_hwaddr.sa_data[i];
+	}
+	
+	
 	return ret;
 }
 
@@ -121,24 +155,28 @@ void send_icmp_response(const u_char *pkt_data, unsigned short ihl){
 	}
 	
 	//fill out ethernet header
-	struct enet_header *received_enet_header = (struct enet_header *)pkt_data[-(ihl + sizeof(struct enet_header))];
-	struct enet_header *response_enet_header = (struct enet_header *)pkt_data;
+	struct enet_header *received_enet_header = (struct enet_header *)&pkt_data[-(ihl + sizeof(struct enet_header))];
+	struct enet_header *response_enet_header = (struct enet_header *)&pkt_data;
 	response_enet_header->source = received_enet_header->dest;
 	response_enet_header->dest   = received_enet_header->source;
 	response_enet_header->type   = received_enet_header->type;
 	printEthernetHeader(response_enet_header);
 	
 	//fill out IPv4 header
-	struct ip_header *received_ip_header = (struct ip_header *)pkt_data[-(ihl)];
-	struct ip_header *response_ip_header = (struct ip_header *)pkt_data[sizeof(struct enet_header)];
+	struct ip_header *received_ip_header = (struct ip_header *)&pkt_data[-(ihl)];
+	struct ip_header *response_ip_header = (struct ip_header *)&pkt_data[sizeof(struct enet_header)];
 	response_ip_header->ip_version = received_ip_header->ip_version;	
 
 
 	//fill out ICMP header
-	struct icmp_header *received_icmp_header = (struct icmp_header *)pkt_data;
-	struct icmp_header *response_icmp_header = (struct icmp_header *)pkt_data[ihl + sizeof(struct enet_header)];
+	struct icmp_header *response_icmp_header = (struct icmp_header *)&pkt_data[ihl + sizeof(struct enet_header)];
 	response_icmp_header->icmp_type = htons(ICMP_REPLY);
-	response_icmp_header->icmp_code = 
+	response_icmp_header->icmp_code = 0;
+	response_icmp_header->icmp_checksum = 0; //set to 0 before calculating the checksum
+	response_icmp_header->icmp_leftover = 0;
+
+	//calculate the checksum for the field
+	
 }
 
 int parseUDPHeader(const u_char *pkt_data){
@@ -153,7 +191,7 @@ int parseICMPHeader(const u_char *pkt_data, unsigned short ihl){
 	
 	//if this is an echo request, we must make a reply
 	if(icmp->icmp_type == ICMP_REQUEST){
-		send_icmp_response(pkt_data, ihl);	
+		send_icmp_response(pkt_data, ihl);
 	}
 	return 0;
 }
@@ -407,7 +445,7 @@ void strOpcode(uint16_t opcode){
 }
 
 void printEthernetHeader(struct enet_header *ethHeader){
-	printf("\tEthernet Header\n");
+	printf("\n\tEthernet Header\n");
 	
 	printf("\t\tDest MAC: "); 
 	strMAC(ethHeader->dest);
@@ -438,9 +476,7 @@ void printARPHeader(struct arp_header *arp){
 	strIP(arp->target_ip);
 }
 
-void send_icmp_response(); 	//respond to ping
-
-
+/*loop through an ether_addr struct to move to another struct*/
 void copy_mac_address(struct ether_addr *src, struct ether_addr *dst){
 	fprintf(stderr, "Copying in 'copy_mac_address'\n");
 	for(int i=0; i<MAC_ADDR_LEN; i++){
@@ -449,24 +485,44 @@ void copy_mac_address(struct ether_addr *src, struct ether_addr *dst){
 	}
 }
 
+
+/* configure the socket to send out the arp packet */
+void send_to_arp_socket(void *arp_packet){
+	int sent_bytes = 0;
+	response_socket_address.sll_addr[6]  = 0;
+	response_socket_address.sll_addr[7]  = 0;
+	response_socket_address.sll_family   = AF_PACKET; 
+	response_socket_address.sll_halen    = 6;
+	response_socket_address.sll_hatype   = htons(ARPHRD_ETHER);
+	response_socket_address.sll_ifindex  = 0; //needs to change to the right index
+	response_socket_address.sll_pkttype  = PACKET_OTHERHOST;
+	response_socket_address.sll_protocol = htons(ETH_P_ARP);
+
+	//THIS IS WRONG RIGHT HERE!
+	if((sent_bytes = sendto(socket_fd, arp_packet, MIN_ETH_LENGTH, 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) != MIN_ETH_LENGTH){
+		perror("Sendto():");
+		exit(1);
+	}
+
+}
+
 /*pkt_data points to the beginning of the packet to reply to */
 void send_arp_response(const u_char *pkt_data){ 	//response to arp request
-	printf("\ncallocing...\n");
+	fflush(stderr);
+	fflush(stdout);
+	fprintf(stderr, "\n\n\t&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&\n");
+	fprintf(stderr, "\t\t\tSENDING PACKET:");
 	void *arp_packet = calloc(1, MIN_ETH_LENGTH);
 	struct enet_header *ethHeader = (struct enet_header *)arp_packet;
 	struct enet_header *request_eth_header = (struct enet_header *)pkt_data;
-	printEthernetHeader(request_eth_header);
 	struct arp_header *request_arp_header = (struct arp_header *)(++request_eth_header);
-	printARPHeader(request_arp_header);
 	
-	printf("\nsetting ethernet header....\n");
 	//setup ethernet header response
 	ethHeader->dest = request_eth_header->source;
-	//copy_mac_address(spoof_mac_address, &ethHeader->source);
+	ethHeader->source = *spoof_mac_address;
 	ethHeader->type = htons(ARP); 
 	printEthernetHeader(ethHeader);	
 	
-	printf("setting arp header....\n");
 	//setup arp header response
 	struct arp_header *arp_response = (struct arp_header *)(++ethHeader);
 	arp_response->hardware_addr_len = 6; //only 1 byte
@@ -474,15 +530,20 @@ void send_arp_response(const u_char *pkt_data){ 	//response to arp request
 	arp_response->opcode = htons(ARP_REPLY);
 	arp_response->protocol_addr_len = 4; //only 1 byte
 	arp_response->protocol_type = htons(IPV4);
-	fprintf(stderr, "\t\t\tSpoofed IP Address: %s\n", inet_ntoa(spoof_ip_address.sin_addr));
 	arp_response->sender_ip = spoof_ip_address.sin_addr; //spoofed ip address
-	//copy_mac_address(spoof_mac_address, &arp_response->sender_mac);
+	arp_response->sender_mac = *spoof_mac_address;
 	arp_response->target_ip = request_arp_header->sender_ip; //whoever sent
 	arp_response->target_mac = request_arp_header->sender_mac; //whoever sent
 	printARPHeader(arp_response);
 
 	//send out arp response
-	printf("arp packet ready to send....\n");
+	fflush(stderr);
+	fflush(stdout);
+	fprintf(stderr, "\n\t&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&\n\n\n");
+	
+	//send packet over the wire
+	send_to_arp_socket(arp_packet);	
+	fprintf(stderr, "Arp packet sent!\n\n");
 	free(arp_packet);
 }
 
@@ -491,7 +552,6 @@ int parseARPHeader(const u_char *pkt_data){
 	printARPHeader(arp);
 	//save all data here and respond appropriately
 	if(ntohs(arp->opcode) == ARP_REQUEST){
-		fprintf(stderr, "\t\t\tNeed to respond to this ARP request!\n");
 		//pass the packet to the ARP building function
 		send_arp_response(&pkt_data[-(sizeof(struct enet_header))]);
 	}
