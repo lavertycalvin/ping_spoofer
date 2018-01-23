@@ -113,25 +113,13 @@ int get_device(){
 	}
 
 	//get interface index to use for sending ethernet frames
-	//strncpy(interface.ifr_name, device, sizeof(device));
-	//if(ioctl(socket_fd, SIOCGIFINDEX, &interface) < 0){
-	//	perror("ioctl() device: ");
-	//	exit(1);
-	//}
-	interface_index = interface.ifr_ifindex;	
-
-	//get mac address of interface
-	if(ioctl(socket_fd, SIOCGIFHWADDR, &interface) < 0){
-		perror("ioctl() mac: ");
+	strcpy(interface.ifr_name, device);
+	if(ioctl(socket_fd, SIOCGIFINDEX, &interface) < 0){
+		perror("ioctl() device: ");
 		exit(1);
 	}
-	//copy over mac address of interface to global var (and to socket)
-	for(int i = 0; i < 6; i++){
-		response_socket_address.sll_addr[i] = interface.ifr_hwaddr.sa_data[i]; //need to get interface first	
-		interface_mac[i] = interface.ifr_hwaddr.sa_data[i];
-	}
-	
-	
+	interface_index = interface.ifr_ifindex;	
+
 	return ret;
 }
 
@@ -476,30 +464,27 @@ void printARPHeader(struct arp_header *arp){
 	strIP(arp->target_ip);
 }
 
-/*loop through an ether_addr struct to move to another struct*/
-void copy_mac_address(struct ether_addr *src, struct ether_addr *dst){
-	fprintf(stderr, "Copying in 'copy_mac_address'\n");
-	for(int i=0; i<MAC_ADDR_LEN; i++){
-		fprintf(stderr, "Copying %d byte...\n", i);
-		dst[i] = src[i];	
-	}
-}
 
 
 /* configure the socket to send out the arp packet */
 void send_to_arp_socket(void *arp_packet){
 	int sent_bytes = 0;
+	response_socket_address.sll_addr[0]  = 0;
+	response_socket_address.sll_addr[1]  = 0;
+	response_socket_address.sll_addr[2]  = 0;
+	response_socket_address.sll_addr[3]  = 0;
+	response_socket_address.sll_addr[4]  = 0;
+	response_socket_address.sll_addr[5]  = 0;
 	response_socket_address.sll_addr[6]  = 0;
 	response_socket_address.sll_addr[7]  = 0;
 	response_socket_address.sll_family   = AF_PACKET; 
-	response_socket_address.sll_halen    = 6;
+	response_socket_address.sll_halen    = 0;
 	response_socket_address.sll_hatype   = htons(ARPHRD_ETHER);
-	response_socket_address.sll_ifindex  = 0; //needs to change to the right index
+	response_socket_address.sll_ifindex  = interface.ifr_ifindex; //needs to change to the right index
 	response_socket_address.sll_pkttype  = PACKET_OTHERHOST;
 	response_socket_address.sll_protocol = htons(ETH_P_ARP);
 
-	//THIS IS WRONG RIGHT HERE!
-	if((sent_bytes = sendto(socket_fd, arp_packet, MIN_ETH_LENGTH, 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) != MIN_ETH_LENGTH){
+	if((sent_bytes = sendto(socket_fd, arp_packet, MIN_ETH_LENGTH, 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) == -1){
 		perror("Sendto():");
 		exit(1);
 	}
@@ -536,6 +521,11 @@ void send_arp_response(const u_char *pkt_data){ 	//response to arp request
 	arp_response->target_mac = request_arp_header->sender_mac; //whoever sent
 	printARPHeader(arp_response);
 
+	//set destination for the packet
+	for(int i = 0; i < MAC_ADDR_LEN; i++){
+		response_socket_address.sll_addr[i] = arp_response->target_mac.ether_addr_octet[i];
+	}
+	
 	//send out arp response
 	fflush(stderr);
 	fflush(stdout);
