@@ -143,7 +143,7 @@ void strIP(struct in_addr ipAddr);
 
 int parseTCPHeader(struct tcp_combo *combo);
 int parseUDPHeader(const u_char *pkt_data);
-int parseICMPHeader(const u_char *pkt_data, unsigned short ihl);
+int parseICMPHeader(const u_char *pkt_data, unsigned short ihl, unsigned short pkt_and_data_length);
 
 void printTCPHeader(struct tcp_combo *tcp);
 void printUDPHeader(struct udp_header *udp);

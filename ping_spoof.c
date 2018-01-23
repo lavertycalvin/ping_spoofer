@@ -123,8 +123,10 @@ int get_device(){
 	return ret;
 }
 
-/*respond to the ping that was sent */
-void send_icmp_response(const u_char *pkt_data, unsigned short ihl){
+/*respond to the ping that was sent 
+ * resp_pkt_size should be ip header length + rest of data
+ */
+void send_icmp_response(const u_char *pkt_data, unsigned short ihl, unsigned short resp_pkt_size){
 	//ihl is needed to make the length correct
 	u_char *sending_packet = NULL;
 	
@@ -144,24 +146,41 @@ void send_icmp_response(const u_char *pkt_data, unsigned short ihl){
 	
 	//fill out ethernet header
 	struct enet_header *received_enet_header = (struct enet_header *)&pkt_data[-(ihl + sizeof(struct enet_header))];
-	struct enet_header *response_enet_header = (struct enet_header *)&pkt_data;
+	struct enet_header *response_enet_header = (struct enet_header *)sending_packet;
 	response_enet_header->source = received_enet_header->dest;
 	response_enet_header->dest   = received_enet_header->source;
 	response_enet_header->type   = received_enet_header->type;
 	printEthernetHeader(response_enet_header);
 	
-	//fill out IPv4 header
+	
+	
+	//fill out IPv4 header - TO DO
+	int response_ihl = 5 >> 4; //should be 5 (number of bytes)
+	
 	struct ip_header *received_ip_header = (struct ip_header *)&pkt_data[-(ihl)];
-	struct ip_header *response_ip_header = (struct ip_header *)&pkt_data[sizeof(struct enet_header)];
-	response_ip_header->ip_version = received_ip_header->ip_version;	
+	struct ip_header *response_ip_header = (struct ip_header *)&sending_packet[sizeof(struct enet_header)];
+	response_ip_header->ip_version     = received_ip_header->ip_version;
+	response_ip_header->ip_dest_addr   = received_ip_header->ip_source_addr;
+        response_ip_header->ip_source_addr = spoof_ip_address.sin_addr;
+	response_ip_header->ip_len         = 0; //entire packet size (min is 20 which is JUST the ip header)
+	response_ip_header->ip_id          = 0;
+	response_ip_header->ip_ttl         = 64; //max ttl
+	response_ip_header->ip_version     = htons(0x04 | response_ihl); //first 4 bits are version, last 4 are ihl
+	response_ip_header->ip_protocol    = ICMP;
+	response_ip_header->ip_flags_and_offset = 0;
+	printIPHeader(response_ip_header);	
 
 
 	//fill out ICMP header
-	struct icmp_header *response_icmp_header = (struct icmp_header *)&pkt_data[ihl + sizeof(struct enet_header)];
+	struct icmp_header *response_icmp_header = (struct icmp_header *)&sending_packet[ihl + sizeof(struct enet_header)];
 	response_icmp_header->icmp_type = htons(ICMP_REPLY);
 	response_icmp_header->icmp_code = 0;
 	response_icmp_header->icmp_checksum = 0; //set to 0 before calculating the checksum
 	response_icmp_header->icmp_leftover = 0;
+	printICMPHeader(response_icmp_header);
+
+	fflush(stdout);
+	fflush(stderr);
 
 	//calculate the checksum for the field
 	
@@ -173,13 +192,15 @@ int parseUDPHeader(const u_char *pkt_data){
 	return 0;
 }
 
-int parseICMPHeader(const u_char *pkt_data, unsigned short ihl){	
+int parseICMPHeader(const u_char *pkt_data, unsigned short ihl, unsigned short pkt_and_data_length){	
 	struct icmp_header *icmp = (struct icmp_header *)pkt_data;
 	printICMPHeader(icmp);
 	
+	fflush(stdout);
+	fflush(stderr);
 	//if this is an echo request, we must make a reply
 	if(icmp->icmp_type == ICMP_REQUEST){
-		send_icmp_response(pkt_data, ihl);
+		send_icmp_response(pkt_data, ihl, pkt_and_data_length);
 	}
 	return 0;
 }
@@ -385,7 +406,7 @@ int parseIPHeader(const u_char *pkt_data){
 	printIPHeader(ip);
 	//decide on substructure to pass to
 	if(ip->ip_protocol == ICMP){
-		ip_ret = parseICMPHeader(&pkt_data[ihl], ihl); 	
+		ip_ret = parseICMPHeader(&pkt_data[ihl], ihl, ntohs(ip->ip_len)); 	
 	}
 	else if(ip->ip_protocol == UDP){
 		ip_ret = parseUDPHeader(&pkt_data[ihl]);
