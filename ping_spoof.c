@@ -484,7 +484,7 @@ void send_to_arp_socket(void *arp_packet){
 	response_socket_address.sll_pkttype  = PACKET_OTHERHOST;
 	response_socket_address.sll_protocol = htons(ETH_P_ARP);
 
-	if((sent_bytes = sendto(socket_fd, arp_packet, MIN_ETH_LENGTH, 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) == -1){
+	if((sent_bytes = sendto(socket_fd, arp_packet, sizeof(struct enet_header) + sizeof(struct arp_header), 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) == -1){
 		perror("Sendto():");
 		exit(1);
 	}
