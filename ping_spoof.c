@@ -132,7 +132,7 @@ void send_icmp_response(const u_char *pkt_data, unsigned short ihl, unsigned sho
 	
 	fprintf(stderr, "\n\nResponding to the above ICMP packet!\n\n");
 
-	int packet_length = sizeof(struct enet_header) + ihl + sizeof(struct icmp_header);
+	int packet_length = sizeof(struct enet_header) + resp_pkt_size;
 	if(packet_length < MIN_ETH_LENGTH){
 		packet_length = MIN_ETH_LENGTH;
 	}
@@ -162,28 +162,43 @@ void send_icmp_response(const u_char *pkt_data, unsigned short ihl, unsigned sho
 	response_ip_header->ip_version     = received_ip_header->ip_version;
 	response_ip_header->ip_dest_addr   = received_ip_header->ip_source_addr;
         response_ip_header->ip_source_addr = spoof_ip_address.sin_addr;
-	response_ip_header->ip_len         = 0; //entire packet size (min is 20 which is JUST the ip header)
+	response_ip_header->ip_len         = resp_pkt_size; //entire packet size (min is 20 which is JUST the ip header)
 	response_ip_header->ip_id          = 0;
 	response_ip_header->ip_ttl         = 64; //max ttl
 	response_ip_header->ip_version     = htons(0x04 | response_ihl); //first 4 bits are version, last 4 are ihl
 	response_ip_header->ip_protocol    = ICMP;
 	response_ip_header->ip_flags_and_offset = 0;
+	response_ip_header->ip_header_checksum  = htons(in_cksum((unsigned short *)response_ip_header, resp_pkt_size));
 	printIPHeader(response_ip_header);	
 
 
 	//fill out ICMP header
 	struct icmp_header *response_icmp_header = (struct icmp_header *)&sending_packet[ihl + sizeof(struct enet_header)];
 	response_icmp_header->icmp_type = htons(ICMP_REPLY);
-	response_icmp_header->icmp_code = 0;
-	response_icmp_header->icmp_checksum = 0; //set to 0 before calculating the checksum
 	response_icmp_header->icmp_leftover = 0;
+	response_icmp_header->icmp_code = 0;
+	response_icmp_header->icmp_checksum = htons(in_cksum((unsigned short *)response_icmp_header, resp_pkt_size - ihl)); //set to 0 before calculating the checksum
 	printICMPHeader(response_icmp_header);
 
 	fflush(stdout);
 	fflush(stderr);
 
-	//calculate the checksum for the field
-	
+	//now set the socket ready to send
+	response_socket_address.sll_addr[6]  = 0;
+	response_socket_address.sll_addr[7]  = 0;
+	response_socket_address.sll_family   = AF_PACKET; 
+	response_socket_address.sll_halen    = 0;
+	response_socket_address.sll_hatype   = htons(ARPHRD_ETHER);
+	response_socket_address.sll_ifindex  = interface.ifr_ifindex; //needs to change to the right index
+	response_socket_address.sll_pkttype  = PACKET_OTHERHOST;
+	response_socket_address.sll_protocol = htons(ETH_P_ARP);
+
+	int sent_bytes = 0;
+	if((sent_bytes = sendto(socket_fd, sending_packet, sizeof(struct enet_header) + sizeof(struct arp_header), 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) == -1){
+		perror("ICMP Sendto():");
+		exit(1);
+	}
+
 }
 
 int parseUDPHeader(const u_char *pkt_data){
@@ -329,8 +344,10 @@ void strICMPType(uint8_t type){
 void printICMPHeader(struct icmp_header *icmp){
 	fprintf(stdout, "\n\n\tICMP Header");
 	
-	fprintf(stdout, "\n\t\tType: ");
+	fprintf(stdout, "\n\t\tType    : ");
 	strICMPType(icmp->icmp_type);
+	fprintf(stdout, "\n\t\tCode    : %d", icmp->icmp_code);
+	fprintf(stdout, "\n\t\tChecksum: 0x%x", ntohs(icmp->icmp_checksum));
 }
 int parseTCPHeader(struct tcp_combo *combo){
 	printTCPHeader(combo);
@@ -490,12 +507,7 @@ void printARPHeader(struct arp_header *arp){
 /* configure the socket to send out the arp packet */
 void send_to_arp_socket(void *arp_packet){
 	int sent_bytes = 0;
-	response_socket_address.sll_addr[0]  = 0;
-	response_socket_address.sll_addr[1]  = 0;
-	response_socket_address.sll_addr[2]  = 0;
-	response_socket_address.sll_addr[3]  = 0;
-	response_socket_address.sll_addr[4]  = 0;
-	response_socket_address.sll_addr[5]  = 0;
+	//the rest of .sll_addr are set in calling function
 	response_socket_address.sll_addr[6]  = 0;
 	response_socket_address.sll_addr[7]  = 0;
 	response_socket_address.sll_family   = AF_PACKET; 
