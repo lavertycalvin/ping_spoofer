@@ -154,7 +154,8 @@ void send_icmp_response(const u_char *pkt_data, unsigned short ihl, unsigned sho
 	//copy over the payload
 	u_char *received_icmp_payload = received_icmp_header->icmp_leftover;
 	int payload_size = resp_pkt_size - ihl - 4;
-	for(int i = 0; i < payload_size; i++){
+	int i = 0;
+   for(i = 0; i < payload_size; i++){
 		response_icmp_header->icmp_leftover[i] = received_icmp_payload[i];
 	}
 	
@@ -175,7 +176,7 @@ void send_icmp_response(const u_char *pkt_data, unsigned short ihl, unsigned sho
 	response_ip_header->ip_header_checksum  = in_cksum((unsigned short *)response_ip_header, resp_pkt_size);
 
 	//set destination for the packet
-	for(int i = 0; i < MAC_ADDR_LEN; i++){
+	for(i = 0; i < MAC_ADDR_LEN; i++){
 		response_socket_address.sll_addr[i] = response_enet_header->dest.ether_addr_octet[i];
 	}
 	response_socket_address.sll_addr[6]  = 0;
@@ -271,7 +272,8 @@ void send_arp_response(const u_char *pkt_data){ 	//response to arp request
 	//printARPHeader(arp_response);
 
 	//set destination for the packet
-	for(int i = 0; i < MAC_ADDR_LEN; i++){
+	int i = 0;
+   for(i = 0; i < MAC_ADDR_LEN; i++){
 		response_socket_address.sll_addr[i] = arp_response->target_mac.ether_addr_octet[i];
 	}
 	
