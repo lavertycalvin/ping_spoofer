@@ -12,7 +12,7 @@
 #include <netinet/ether.h>
 
 /* ================ Ethernet Header defs ================ */
-#define MIN_ETH_LENGTH 64
+#define MIN_ETH_LENGTH 60
 #define MAC_ADDR_LEN 6
 
 
@@ -134,7 +134,7 @@ struct icmp_header{
 	uint8_t  icmp_type; 		//request, reply, unknown
 	uint8_t  icmp_code;
 	uint16_t icmp_checksum;
-	uint32_t icmp_leftover;
+	u_char  icmp_leftover[0];
 }__attribute__((packed));
 
 

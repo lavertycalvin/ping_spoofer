@@ -10,6 +10,7 @@
 #include <linux/if_packet.h>
 #include <sys/ioctl.h>
 #include <net/if.h>
+#include "smartalloc.h"
 
 /* GLOBAL DEFS FOR SPOOFING */
 char 			*device; 		//device used to sniff
@@ -64,7 +65,7 @@ int parse_input_mac(char *input_mac){
 int setup_pcap_filter(){
 	int ret = 0;
 	
-	sprintf(filter_exp, "(arp or icmp) and host %s", inet_ntoa(spoof_ip_address.sin_addr));
+	sprintf(filter_exp, "(arp or icmp) and dst host %s", inet_ntoa(spoof_ip_address.sin_addr));
 	fprintf(stderr, "Filter expression: %s\n", filter_exp);
 	
 	if (pcap_compile(handle, &fp, filter_exp, 0, net) == -1) {
@@ -107,7 +108,7 @@ int get_device(){
 	}
 	
 	//request raw socket
-	if((socket_fd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0){
+	if((socket_fd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0){
 		perror("Failure in requesting socket for arp response:");
 		exit(1);
 	}
@@ -149,56 +150,66 @@ void send_icmp_response(const u_char *pkt_data, unsigned short ihl, unsigned sho
 	struct enet_header *response_enet_header = (struct enet_header *)sending_packet;
 	response_enet_header->source = received_enet_header->dest;
 	response_enet_header->dest   = received_enet_header->source;
-	response_enet_header->type   = received_enet_header->type;
-	printEthernetHeader(response_enet_header);
+	response_enet_header->type   = htons(IPV4);
 	
+	//fill out ICMP header
+	struct icmp_header *response_icmp_header = (struct icmp_header *)&sending_packet[ihl + sizeof(struct enet_header)];
+	struct icmp_header *received_icmp_header = (struct icmp_header *)pkt_data;
+
+	response_icmp_header->icmp_type = htons(ICMP_REPLY);
+	response_icmp_header->icmp_code = 0;
+	
+	u_char *received_icmp_payload = received_icmp_header->icmp_leftover;
+	//copy over the payload
+	int payload_size = resp_pkt_size - ihl - 4;
+	for(int i = 0; i < payload_size; i++){
+		response_icmp_header->icmp_leftover[i] = received_icmp_payload[i];
+	
+	}
+	
+	response_icmp_header->icmp_checksum = in_cksum((unsigned short *)response_icmp_header, payload_size + 4); //set to 0 before calculating the checksum
 	
 	
 	//fill out IPv4 header - TO DO
-	int response_ihl = 5 >> 4; //should be 5 (number of bytes)
-	
 	struct ip_header *received_ip_header = (struct ip_header *)&pkt_data[-(ihl)];
 	struct ip_header *response_ip_header = (struct ip_header *)&sending_packet[sizeof(struct enet_header)];
 	response_ip_header->ip_version     = received_ip_header->ip_version;
 	response_ip_header->ip_dest_addr   = received_ip_header->ip_source_addr;
         response_ip_header->ip_source_addr = spoof_ip_address.sin_addr;
-	response_ip_header->ip_len         = resp_pkt_size; //entire packet size (min is 20 which is JUST the ip header)
+	response_ip_header->ip_len         = htons(resp_pkt_size); //entire packet size (min is 20 which is JUST the ip header)
 	response_ip_header->ip_id          = 0;
 	response_ip_header->ip_ttl         = 64; //max ttl
-	response_ip_header->ip_version     = htons(0x04 | response_ihl); //first 4 bits are version, last 4 are ihl
+	response_ip_header->ip_version     = received_ip_header->ip_version; //first 4 bits are version, last 4 are ihl
 	response_ip_header->ip_protocol    = ICMP;
 	response_ip_header->ip_flags_and_offset = 0;
 	response_ip_header->ip_header_checksum  = htons(in_cksum((unsigned short *)response_ip_header, resp_pkt_size));
-	printIPHeader(response_ip_header);	
 
 
-	//fill out ICMP header
-	struct icmp_header *response_icmp_header = (struct icmp_header *)&sending_packet[ihl + sizeof(struct enet_header)];
-	response_icmp_header->icmp_type = htons(ICMP_REPLY);
-	response_icmp_header->icmp_leftover = 0;
-	response_icmp_header->icmp_code = 0;
-	response_icmp_header->icmp_checksum = htons(in_cksum((unsigned short *)response_icmp_header, resp_pkt_size - ihl)); //set to 0 before calculating the checksum
-	printICMPHeader(response_icmp_header);
 
 	fflush(stdout);
 	fflush(stderr);
+	
+	//set destination for the packet
+	for(int i = 0; i < MAC_ADDR_LEN; i++){
+		response_socket_address.sll_addr[i] = response_enet_header->dest.ether_addr_octet[i];
+	}
 
 	//now set the socket ready to send
+	int sent_bytes = 0;
+	//the rest of .sll_addr are set in calling function
 	response_socket_address.sll_addr[6]  = 0;
 	response_socket_address.sll_addr[7]  = 0;
 	response_socket_address.sll_family   = AF_PACKET; 
-	response_socket_address.sll_halen    = 0;
-	response_socket_address.sll_hatype   = htons(ARPHRD_ETHER);
+	response_socket_address.sll_halen    = 6;
+	response_socket_address.sll_hatype   = 0;
 	response_socket_address.sll_ifindex  = interface.ifr_ifindex; //needs to change to the right index
 	response_socket_address.sll_pkttype  = PACKET_OTHERHOST;
-	response_socket_address.sll_protocol = htons(ETH_P_ARP);
+	response_socket_address.sll_protocol = htons(ETH_P_IP);
 
-	int sent_bytes = 0;
-	if((sent_bytes = sendto(socket_fd, sending_packet, sizeof(struct enet_header) + sizeof(struct arp_header), 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) == -1){
+	if((sent_bytes = sendto(socket_fd, sending_packet, packet_length, 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) == -1){
 		perror("ICMP Sendto():");
 		exit(1);
 	}
-
 }
 
 int parseUDPHeader(const u_char *pkt_data){
@@ -209,7 +220,7 @@ int parseUDPHeader(const u_char *pkt_data){
 
 int parseICMPHeader(const u_char *pkt_data, unsigned short ihl, unsigned short pkt_and_data_length){	
 	struct icmp_header *icmp = (struct icmp_header *)pkt_data;
-	printICMPHeader(icmp);
+	//printICMPHeader(icmp);
 	
 	fflush(stdout);
 	fflush(stderr);
@@ -403,6 +414,8 @@ void printIPHeader(struct ip_header *ip){
 	fprintf(stdout, "\n\t\tTTL: ");
 	strTTL(ip->ip_ttl);
 	
+	fprintf(stdout, "\n\t\tIHL: %d", (ip->ip_version & 0x0f));
+
 	fprintf(stdout, "\n\t\tProtocol: ");
 	strIPProtocol(ip->ip_protocol);
 	
@@ -419,8 +432,8 @@ void printIPHeader(struct ip_header *ip){
 int parseIPHeader(const u_char *pkt_data){
 	int ip_ret = 0;
 	struct ip_header *ip = (struct ip_header *)pkt_data;	
-	unsigned short ihl = (ip->ip_version & 0xf) * sizeof(uint32_t); //take off the upper bits
-	printIPHeader(ip);
+	unsigned short ihl = (ip->ip_version & 0x0f) * sizeof(uint32_t); //take off the upper bits
+	//printIPHeader(ip);
 	//decide on substructure to pass to
 	if(ip->ip_protocol == ICMP){
 		ip_ret = parseICMPHeader(&pkt_data[ihl], ihl, ntohs(ip->ip_len)); 	
@@ -511,14 +524,14 @@ void send_to_arp_socket(void *arp_packet){
 	response_socket_address.sll_addr[6]  = 0;
 	response_socket_address.sll_addr[7]  = 0;
 	response_socket_address.sll_family   = AF_PACKET; 
-	response_socket_address.sll_halen    = 0;
+	response_socket_address.sll_halen    = 6;
 	response_socket_address.sll_hatype   = htons(ARPHRD_ETHER);
 	response_socket_address.sll_ifindex  = interface.ifr_ifindex; //needs to change to the right index
 	response_socket_address.sll_pkttype  = PACKET_OTHERHOST;
 	response_socket_address.sll_protocol = htons(ETH_P_ARP);
 
-	if((sent_bytes = sendto(socket_fd, arp_packet, sizeof(struct enet_header) + sizeof(struct arp_header), 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) == -1){
-		perror("Sendto():");
+	if((sent_bytes = sendto(socket_fd, arp_packet, MIN_ETH_LENGTH, 0, (struct sockaddr *)&response_socket_address, sizeof(response_socket_address))) == -1){
+		perror("ARP Sendto():");
 		exit(1);
 	}
 
@@ -528,31 +541,31 @@ void send_to_arp_socket(void *arp_packet){
 void send_arp_response(const u_char *pkt_data){ 	//response to arp request
 	fflush(stderr);
 	fflush(stdout);
-	fprintf(stderr, "\n\n\t&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&\n");
-	fprintf(stderr, "\t\t\tSENDING PACKET:");
+	//fprintf(stderr, "\n\n\t&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&\n");
+	//fprintf(stderr, "\t\t\tSENDING PACKET:");
 	void *arp_packet = calloc(1, MIN_ETH_LENGTH);
 	struct enet_header *ethHeader = (struct enet_header *)arp_packet;
 	struct enet_header *request_eth_header = (struct enet_header *)pkt_data;
-	struct arp_header *request_arp_header = (struct arp_header *)(++request_eth_header);
+	struct arp_header *request_arp_header = (struct arp_header *)(&pkt_data[14]);
 	
 	//setup ethernet header response
 	ethHeader->dest = request_eth_header->source;
 	ethHeader->source = *spoof_mac_address;
 	ethHeader->type = htons(ARP); 
-	printEthernetHeader(ethHeader);	
+	//printEthernetHeader(ethHeader);	
 	
 	//setup arp header response
 	struct arp_header *arp_response = (struct arp_header *)(++ethHeader);
-	arp_response->hardware_addr_len = 6; //only 1 byte
 	arp_response->hardware_type = htons(1); //Ethernet
-	arp_response->opcode = htons(ARP_REPLY);
-	arp_response->protocol_addr_len = 4; //only 1 byte
 	arp_response->protocol_type = htons(IPV4);
-	arp_response->sender_ip = spoof_ip_address.sin_addr; //spoofed ip address
+	arp_response->hardware_addr_len = 6; //only 1 byte
+	arp_response->protocol_addr_len = 4; //only 1 byte
+	arp_response->opcode = htons(ARP_REPLY);
 	arp_response->sender_mac = *spoof_mac_address;
-	arp_response->target_ip = request_arp_header->sender_ip; //whoever sent
+	arp_response->sender_ip = spoof_ip_address.sin_addr; //spoofed ip address
 	arp_response->target_mac = request_arp_header->sender_mac; //whoever sent
-	printARPHeader(arp_response);
+	arp_response->target_ip = request_arp_header->sender_ip; //whoever sent
+	//printARPHeader(arp_response);
 
 	//set destination for the packet
 	for(int i = 0; i < MAC_ADDR_LEN; i++){
@@ -562,11 +575,11 @@ void send_arp_response(const u_char *pkt_data){ 	//response to arp request
 	//send out arp response
 	fflush(stderr);
 	fflush(stdout);
-	fprintf(stderr, "\n\t&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&\n\n\n");
+	//fprintf(stderr, "\n\t&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&\n\n\n");
 	
 	//send packet over the wire
 	send_to_arp_socket(arp_packet);	
-	fprintf(stderr, "Arp packet sent!\n\n");
+	//fprintf(stderr, "Arp packet sent!\n\n");
 	free(arp_packet);
 }
 
@@ -576,7 +589,7 @@ int parseARPHeader(const u_char *pkt_data){
 	//save all data here and respond appropriately
 	if(ntohs(arp->opcode) == ARP_REQUEST){
 		//pass the packet to the ARP building function
-		send_arp_response(&pkt_data[-(sizeof(struct enet_header))]);
+		send_arp_response(&pkt_data[-sizeof(struct enet_header)]);
 	}
 	
 	return 0;
@@ -602,7 +615,7 @@ int parseEthernetHeader(const u_char *pkt_data){
 	int subHeaderReturn = 0;
 	struct enet_header *ethHeader = (struct enet_header *)pkt_data;
 	
-	printEthernetHeader(ethHeader);
+	//printEthernetHeader(ethHeader);
 	
 	//now pass on to correct sub-structure	
 	if(ntohs(ethHeader->type) == ARP){
