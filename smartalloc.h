@@ -77,16 +77,16 @@ void smartalloc_track(char *data, unsigned long space, unsigned char needs_free,
 #include <unordered_map>
 #endif
 
-inline void *operator new(size_t size, char *file, int line, char pat) { return smartalloc(size, file, line, pat); }
-inline void *operator new[](size_t size, char *file, int line, char pat) { return smartalloc(size, file, line, pat); }
-inline void operator delete(void *p) { smartfree(p, __FILE__, __LINE__); }
-inline void operator delete[](void *p) { smartfree(p, __FILE__, __LINE__); }
+inline void *operator new(size_t size, char *file, int line, char pat) throw() { return smartalloc(size, file, line, pat); }
+inline void *operator new[](size_t size, char *file, int line, char pat) throw() { return smartalloc(size, file, line, pat); }
+inline void operator delete(void *p) throw() { smartfree(p, __FILE__, __LINE__); }
+inline void operator delete[](void *p) throw() { smartfree(p, __FILE__, __LINE__); }
 inline void *operator new(size_t size, const std::nothrow_t&t, char *file, int line, char pat) { return smartalloc(size, file, line, pat); }
 inline void *operator new[](size_t size, const std::nothrow_t&t, char *file, int line, char pat) { return smartalloc(size, file, line, pat); }
-inline void *operator new(size_t size) { return smartalloc(size, __FILE__, __LINE__, 0x54); }
+inline void *operator new(size_t size) throw (std::bad_alloc) { return smartalloc(size, __FILE__, __LINE__, 0x54); }
 
-inline void *operator new(size_t size, const std::nothrow_t&t) { return smartalloc(size, __FILE__, __LINE__, 0x54); }
-inline void *operator new[](size_t size, const std::nothrow_t&t) { return smartalloc(size, __FILE__, __LINE__, 0x54); }
+inline void *operator new(size_t size, const std::nothrow_t&t) throw() { return smartalloc(size, __FILE__, __LINE__, 0x54); }
+inline void *operator new[](size_t size, const std::nothrow_t&t) throw() { return smartalloc(size, __FILE__, __LINE__, 0x54); }
 
 inline void *operator new(size_t size, const void *p, const char *file, int line, char pat)
 {
@@ -107,7 +107,9 @@ inline void *operator new[](size_t size, const void *p, const char *file, int li
 	return data;
 }
 
+#ifndef SMARTALLOC_PEDANTIC
 #define new(...) new(__VA_ARGS__, __FILE__, __LINE__, 0x54)
+#endif
 // #define new new(__FILE__, __LINE__, 0x54)
 
 template <class T>
@@ -204,7 +206,7 @@ namespace SMA {
       };
 #endif
 
-};
+}
 
 #endif
 
